@@ -1,0 +1,155 @@
+---
+title: "MA678_Udemy"
+author: "Xiaojia Liu"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(quantmod)
+library(RcppBDT)
+library(tidyverse)
+library(caret)
+library(timeDate)
+library(lubridate)
+library(PerformanceAnalytics)
+library(rstanarm)
+library(lme4)
+```
+
+### Load Data
+```{r}
+udemy_original <- read.csv("udemy_original.csv")
+nrow(udemy_original)
+head(udemy_original)
+summary(udemy_original)
+
+#Explore why there're 1403 NAs in discount_price__amount
+#while no NA in discount_price__currency & discount_price__price_string
+udemy_discountNA <- udemy_original[is.na(udemy_original$discount_price__amount),]
+head(udemy_discountNA)
+udemy_priceNA <- udemy_original[is.na(udemy_original$price_detail__amount),]
+head(udemy_discountNA)
+```
+
+### EDA & Data Processing
+1 - Assign NA to correspond empty value.
+2 - Replace NA with 0 for numerical varibles.
+```{r}
+udemy_original$url <- NULL
+n = nrow(udemy_original)
+for(i in 1:n){
+  if(is.na(udemy_original$discount_price__amount[i])){
+    udemy_original$discount_price__amount[i] <- 0
+    udemy_original$discount_price__currency[i] <- NA
+    udemy_original$discount_price__price_string[i] <- NA
+  }
+}
+
+for(i in 1:n){
+  if(is.na(udemy_original$price_detail__amount[i])){
+    udemy_original$price_detail__amount[i] <- 0
+    udemy_original$discount_price__currency[i] <- NA
+    udemy_original$price_detail__price_string[i] <- NA
+  }
+}
+```
+
+```{r}
+summary(udemy_original)
+rm(udemy_discountNA)
+rm(udemy_priceNA)
+# In the following session, use udemy only
+udemy <- udemy_original
+```
+
+
+
+### More on EDA
+## Look into the numeric values
+```{r}
+udemy_numerical <- subset(udemy, select = c(id, num_subscribers, avg_rating, avg_rating_recent, rating, num_reviews, num_published_lectures, num_published_practice_tests, price_detail__amount))
+chart.Correlation(udemy_numerical, histogram = TRUE, pch = 19)
+
+```
+There might be some correlation between number of subscribers and number of reviews.  
+The num_published_lectures (cor = 0.21) might be slight related.  
+
+## M1 - subscribers vs reviews
+```{r}
+udemy_M1 <- as.data.frame(cbind(subscribers = udemy$num_subscribers, reviews = udemy$num_reviews))
+head(udemy_M1)
+#chart.Correlation(udemy_M1, histogram = TRUE, pch = 19)
+
+ggplot(udemy_M1, aes(x=reviews, y=subscribers)) + geom_bar(stat="identity", fill="steelblue") + ggtitle("Barplot of subscribers vs reviews")
+ggplot(udemy_M1, aes(x=reviews, y=subscribers)) + geom_point(size = 0.5, alpha = 0.2) + geom_smooth(method='lm') + ggtitle("Linear Regression of subscribers vs reviews")
+
+#if look only at the reviews < 10000
+udemy_M1.2 <- subset(udemy_M1, udemy_M1$reviews<10000)
+ggplot(udemy_M1.2, aes(x=reviews, y=subscribers)) + geom_bar(stat="identity", fill="steelblue") +  ggtitle("Barplot of subscribers vs reviews [reviews < 10000]")
+ggplot(udemy_M1.2, aes(x=reviews, y=subscribers)) + geom_point(size = 0.5, alpha = 0.2) + geom_smooth(method='lm') + ggtitle("Linear Regression of subscribers vs reviews [reviews < 10000]")
+```
+
+## M2 - subscribers vs published lectures
+```{r}
+udemy_M2 <- as.data.frame(cbind(subscribers = udemy$num_subscribers, publish = udemy$num_published_lectures))
+ggplot(udemy_M2, aes(x=publish, y=subscribers)) + geom_bar(stat="identity", fill="steelblue") +  ggtitle("Barplot of subscribers vs published lectures")
+ggplot(udemy_M2, aes(x=publish, y=subscribers)) + geom_point(size = 0.5, alpha = 0.2) + geom_smooth(method='lm') + ggtitle("Linear Regression of subscribers vs published lectures")
+```
+
+### M3 - Multi-Regression with subscribers vs num_reviews * num_published_lectures 
+Observe that, there might be some correlation between num_reviews and num_published_lectures.   
+Intuitively, the more published_lectures available, the more reviews users tend to leave.  
+```{r}
+udemy_M3 <- as.data.frame(cbind(subscribers = udemy$num_subscribers, reviews = udemy$num_reviews, publish = udemy$num_published_lectures))
+y = udemy_M3$subscribers
+x1 = udemy_M3$reviews
+x2 = udemy_M3$publish
+
+M3.1 <- glm(y ~ x1 * x2, data = udemy_M3)
+summary(M3.1)
+coefficients(M3.1)
+
+udemy_M3.2 <- as.data.frame(cbind(subscribers = udemy_M1.2$num_subscribers, reviews = udemy_M1.2$num_reviews, publish = udemy_M1.2$num_published_lectures))
+M3.2 <- glm(y ~ x1 * x2, data = udemy_M3.2)
+summary(M3.2)
+coefficients(M3.2)
+```
+
+### M4 - Multilevel linear models
+```{r}
+M4.1 <- lmer(y ~ x1 + (1 | x2), data=udemy_M3)
+summary(M4.1)
+M4.2 <- lmer(y ~ x1 + (1 | x2), data=udemy_M3.2)
+summary(M4.2)
+```
+
+
+
+### Cross Validation
+```{r}
+set.seed(123)
+training.samples <- udemy_M3$subscribers %>% createDataPartition(p = 0.8, list = FALSE)
+train.data  <- udemy_M3[training.samples, ]
+test.data <- udemy_M3[-training.samples, ]
+
+
+#M3.1
+predictions <- M3.1 %>% predict(test.data)
+data.frame(RMSE = RMSE(predictions, test.data$subscribers), MAE = MAE(predictions, test.data$subscribers))
+#M4.1
+predictions <- M4.1 %>% predict(test.data)
+data.frame(RMSE = RMSE(predictions, test.data$subscribers), MAE = MAE(predictions, test.data$subscribers))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
